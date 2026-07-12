@@ -1,0 +1,11 @@
+{
+  "name": "evm-leaf-verify",
+  "version": "0.3.1",
+  "description": "Minimal keccak256 + typed-data leaf helpers for EVM signature forensics (dependency-free)",
+  "main": "index.js",
+  "keywords": ["keccak", "eip712", "ethereum", "verification", "audit"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=14"
+  }
+}
